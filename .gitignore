@@ -1,0 +1,13 @@
+node_modules/
+.env*
+
+# Backups bevatten je beleggingen en deze repo is openbaar: nooit committen.
+mijnportfolio-backup*.json
+*.backup.json
+portfolio.json*
+# Exports van brokers horen in Documents\MijnPortfolio\exports, niet hier.
+*.csv
+*.xls
+*.xlsx
+*.pdf
+*.zip
