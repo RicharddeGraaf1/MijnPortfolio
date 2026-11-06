@@ -222,6 +222,9 @@ export function validateBackup(data) {
     if (typeof position?.name !== 'string' || !position.name.trim()) {
       return 'Een belegging in deze backup heeft geen naam.';
     }
+    if (position.account != null && typeof position.account !== 'string') {
+      return `${label} heeft een ongeldige rekening.`;
+    }
     if (!['prive', 'zakelijk'].includes(position.portfolio)) {
       return `${label} is niet privé of zakelijk.`;
     }

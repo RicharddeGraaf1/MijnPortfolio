@@ -13,7 +13,8 @@ const TABS = { alles: 'Alles', ...PORTFOLIOS };
 const THEME_COLORS = { alles: '#0b5cad', prive: '#f4c20d', zakelijk: '#4b2e9e' };
 const RANGES = ['1M', '6M', '1J', 'Altijd'];
 
-const state = { tab: 'alles', range: 'Altijd', refreshing: false, refreshFailed: false };
+// filter: null, 'rekening:<naam>' of 'belegging:<ticker of id>'; werkt binnen de gekozen tab.
+const state = { tab: 'alles', range: 'Altijd', filter: null, refreshing: false, refreshFailed: false };
 const app = document.getElementById('app');
 
 // ---------- Opmaak ----------
@@ -90,6 +91,52 @@ const withSummary = (position) => ({ position, summary: summarize(position, quot
 
 function chartPositions(items) {
   return items.map(({ position, summary }) => ({ txs: position.txs, points: summary.points }));
+}
+
+// Hetzelfde fonds op twee rekeningen telt in het filter als één belegging.
+const securityKey = (position) => position.symbol ?? `id-${position.id}`;
+
+function applyFilter(items) {
+  if (!state.filter) return items;
+  const [kind, value] = [state.filter.slice(0, state.filter.indexOf(':')), state.filter.slice(state.filter.indexOf(':') + 1)];
+  return items.filter(({ position }) =>
+    (kind === 'rekening' ? position.account === value : securityKey(position) === value));
+}
+
+function filterOptions(items) {
+  const accounts = [...new Set(items.map(({ position }) => position.account).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b, 'nl'));
+  const groups = new Map();
+  for (const item of items) {
+    const key = securityKey(item.position);
+    groups.set(key, [...(groups.get(key) ?? []), item]);
+  }
+  const securities = [...groups].map(([key, list]) => ({
+    key: `belegging:${key}`,
+    label: list[0].position.name,
+    value: totals(list.map((item) => item.summary)).value,
+  })).sort((a, b) => b.value - a.value || a.label.localeCompare(b.label, 'nl'));
+  return {
+    accounts: accounts.length > 1 ? accounts.map((account) => ({ key: `rekening:${account}`, label: account })) : [],
+    securities,
+  };
+}
+
+function filterSelect(items, rerender) {
+  const { accounts, securities } = filterOptions(items);
+  if (accounts.length + securities.length < 2) return null;
+  const option = ({ key, label }) => h('option', { value: key, selected: state.filter === key }, label);
+  return h('label', { class: 'filter' },
+    h('span', { class: 'visually-hidden' }, 'Laat zien'),
+    h('select', {
+      onchange: (event) => {
+        state.filter = event.target.value || null;
+        rerender();
+      },
+    },
+    h('option', { value: '', selected: !state.filter }, 'Alle beleggingen'),
+    accounts.length ? h('optgroup', { label: 'Rekening' }, accounts.map(option)) : null,
+    h('optgroup', { label: 'Belegging' }, securities.map(option))));
 }
 
 // ---------- Onderdelen ----------
@@ -170,10 +217,11 @@ function gainLine(gain, gainPct) {
 }
 
 function hero(options) {
-  const { top, title, figure, lines, chart } = options;
+  const { top, filter, title, figure, lines, chart } = options;
   const figureElement = h('p', { class: 'figure' }, figure);
   const element = h('header', { class: 'hero' },
     top,
+    filter,
     title ? h('h1', { class: 'hero-title' }, title) : null,
     figureElement,
     lines.map((line) => h('p', { class: 'hero-line' }, line)),
@@ -206,7 +254,7 @@ const ICON_MENU = 'M4 7h16M4 12h16M4 17h16';
 const ICON_BACK = 'M15 5l-7 7 7 7';
 
 function positionRow({ position, summary }) {
-  const details = position.symbol ?? 'Zonder koers';
+  const details = [position.account, position.symbol ?? 'Zonder koers'].filter(Boolean).join(', ');
   return h('li', {},
     h('a', { class: 'row', href: `#/positie/${position.id}` },
       h('span', { class: 'row-main' },
@@ -270,7 +318,12 @@ function renderHome() {
   const inTab = state.tab === 'alles' ? all : all.filter((item) => item.position.portfolio === state.tab);
   const open = inTab.filter((item) => !item.summary.closed).sort((a, b) => b.summary.value - a.summary.value);
   const closed = inTab.filter((item) => item.summary.closed);
-  const total = totals(inTab.map((item) => item.summary));
+  let shown = applyFilter(inTab);
+  if (shown.length === 0) {
+    state.filter = null;
+    shown = inTab;
+  }
+  const total = totals(shown.map((item) => item.summary));
   const rerender = () => render();
 
   const tabs = h('div', { class: 'hero-top' },
@@ -286,9 +339,10 @@ function renderHome() {
       }, label))),
     iconButton('Menu', ICON_MENU, openMenu));
 
-  const chart = inTab.length ? chartBlock(inTab, rerender) : null;
+  const chart = inTab.length ? chartBlock(shown, rerender) : null;
   const head = hero({
     top: tabs,
+    filter: filterSelect(inTab, rerender),
     figure: eurHero(total.value),
     lines: inTab.length ? [gainLine(total.gain, total.gainPct), `${eurHero(total.cost)} betaald`] : [],
     chart,
@@ -377,7 +431,7 @@ function renderPosition(id) {
 
   const top = h('div', { class: 'hero-top' },
     h('a', { class: 'back', href: '#/' }, icon(ICON_BACK), 'Overzicht'),
-    h('span', { class: 'hero-tag' }, PORTFOLIOS[position.portfolio]));
+    h('span', { class: 'hero-tag' }, [PORTFOLIOS[position.portfolio], position.account].filter(Boolean).join(', ')));
 
   const chart = chartBlock([item], rerender);
   const lines = summary.closed
@@ -576,6 +630,8 @@ function openPositionDialog(position, defaultPortfolio) {
     if (result) nameInput.value = result.name;
   });
   const current = position?.portfolio ?? defaultPortfolio;
+  const knownAccounts = [...new Set(positions().map((other) => other.account).filter(Boolean))].sort();
+  const accountInput = h('input', { name: 'account', type: 'text', autocomplete: 'off', list: 'accounts', value: position?.account ?? '' });
   const portfolio = h('fieldset', { class: 'choice' },
     h('legend', { class: 'field-label' }, 'Voor wie'),
     Object.entries(PORTFOLIOS).map(([key, label]) => h('label', { class: 'choice-option' },
@@ -586,6 +642,8 @@ function openPositionDialog(position, defaultPortfolio) {
     portfolio,
     picker,
     field('Naam', nameInput, 'Geen ticker? Vul alleen de naam in en werk de waarde zelf bij, bijvoorbeeld voor crowdfunding of een deelneming.'),
+    field('Rekening', accountInput, 'Bijvoorbeeld de naam van je broker. Mag leeg blijven.'),
+    h('datalist', { id: 'accounts' }, knownAccounts.map((account) => h('option', { value: account }))),
     editing ? null : h('h3', { class: 'form-subhead' }, 'Eerste aankoop'),
     editing ? null : tradeFields({}),
   ], {
@@ -593,7 +651,8 @@ function openPositionDialog(position, defaultPortfolio) {
     onSubmit: (data) => {
       const name = String(data.get('name') ?? '').trim();
       if (!name) return 'Kies een belegging uit de zoekresultaten of vul een naam in.';
-      const base = { name, symbol: picked?.symbol ?? null, portfolio: data.get('portfolio') };
+      const account = String(data.get('account') ?? '').trim() || null;
+      const base = { name, account, symbol: picked?.symbol ?? null, portfolio: data.get('portfolio') };
       if (editing) {
         savePosition({ ...position, ...base });
       } else {

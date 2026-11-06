@@ -226,7 +226,8 @@ export function toPosition({ kind, portfolio, account, trades, symbol, name }) {
   const sorted = [...trades].sort((a, b) => (a.time ?? a.date).localeCompare(b.time ?? b.date));
   return {
     id: `${kind}-${account}-${sorted[0].isin}`.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
-    name: `${name ?? sorted[0].name} (${account})`,
+    name: name ?? sorted[0].name,
+    account,
     symbol,
     portfolio,
     manualPrices: [],

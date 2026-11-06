@@ -181,6 +181,8 @@ test('validateBackup accepteert goede en weigert kapotte backups', () => {
   assert.match(validateBackup({ positions: [{ id: 'a' }] }), /geen naam/);
   assert.equal(validateBackup({ positions: [{ name: 'Zonder id', portfolio: 'prive', txs: [buy('2024-01-01', 1, 1)] }] }), null);
   assert.match(validateBackup({ positions: [{ ...good.positions[0], portfolio: 'x' }] }), /privé of zakelijk/);
+  assert.equal(validateBackup({ positions: [{ ...good.positions[0], account: 'Bux' }] }), null);
+  assert.match(validateBackup({ positions: [{ ...good.positions[0], account: 3 }] }), /rekening/);
   assert.match(validateBackup({ positions: [{ ...good.positions[0], txs: [] }] }), /geen transacties/);
   assert.match(validateBackup({ positions: [{ ...good.positions[0], txs: [buy('nope', 1, 1)] }] }), /ongeldige/);
   assert.match(validateBackup({ positions: [{ ...good.positions[0], txs: [sell('2024-01-01', 1, 1)] }] }), /meer dan/);

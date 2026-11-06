@@ -110,7 +110,8 @@ test('ABN: bedragen die niet optellen tot het totaal worden geweigerd', () => {
 
 test('omgezette posities zijn een geldig bestand voor de app', () => {
   const position = toPosition({ kind: 'degiro', portfolio: 'prive', account: 'DEGIRO', trades: parseDegiro(DEGIRO), symbol: 'VWRL.AS', name: 'Vanguard' });
-  assert.equal(position.name, 'Vanguard (DEGIRO)');
+  assert.equal(position.name, 'Vanguard');
+  assert.equal(position.account, 'DEGIRO');
   assert.equal(position.id, 'degiro-degiro-ie00b3rbwm25');
   assert.equal(validateBackup({ positions: [position] }), null);
 });

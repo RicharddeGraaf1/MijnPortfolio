@@ -16,7 +16,7 @@ Invoeren doe je op de pc: in de app, gevolgd door "Opslaan op pc", of rechtstree
 door "Ophalen van pc". Andere apparaten kunnen alleen ophalen; dat vervangt hun kopie. Is het bestand buiten
 de app gewijzigd, dan weigert "Opslaan op pc" het te overschrijven tot je het eerst hebt opgehaald.
 
-Het bestand ziet er zo uit; `id`, `symbol`, `manualPrices` en `fee` mogen ontbreken:
+Het bestand ziet er zo uit; `id`, `account`, `symbol`, `manualPrices` en `fee` mogen ontbreken:
 
 ```json
 {
@@ -24,6 +24,7 @@ Het bestand ziet er zo uit; `id`, `symbol`, `manualPrices` en `fee` mogen ontbre
   "positions": [
     {
       "name": "Vanguard FTSE All-World",
+      "account": "DEGIRO",
       "symbol": "VWRL.AS",
       "portfolio": "prive",
       "txs": [
