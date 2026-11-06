@@ -1,4 +1,4 @@
-// Lijngrafiek van waarde tegenover betaald bedrag, en een gestapelde grafiek van de verdeling.
+// Lijngrafiek van waarde tegenover inleg (of koers tegenover aankoopprijs), en een gestapelde grafiek van de verdeling.
 // Kleuren komen uit de CSS. Teksten gaan via textContent: namen zijn gebruikersinvoer.
 const SVG = 'http://www.w3.org/2000/svg';
 
@@ -151,7 +151,7 @@ export function renderChart(container, series, { formatDate, describe, onSelect 
 }
 
 // Gestapelde vlakken: `series` heeft per punt `parts` in de volgorde van `tones` (CSS-klassen), onderste laag eerst.
-// Met `percent` telt elke dag op tot 100%.
+// Met `percent` telt elke dag op tot 100%; anders loopt de inleg (`cost`) er als stippellijn overheen.
 export function renderStack(container, series, { tones, percent, formatDate, describe, onSelect }) {
   const layersAt = (point) => {
     const scale = percent ? (point.value > 0 ? 100 / point.value : 0) : 1;
@@ -159,7 +159,12 @@ export function renderStack(container, series, { tones, percent, formatDate, des
     return point.parts.map((part) => [sum, (sum += part * scale)]);
   };
   const stacks = series.map(layersAt);
-  const ticks = percent ? PERCENT_TICKS : niceTicks(0, Math.max(...series.map((p) => p.value)));
+  const ticks = percent ? PERCENT_TICKS : niceTicks(0, Math.max(...series.map((p) => Math.max(p.value, p.cost))));
+  const costLine = (x, y) => {
+    if (percent) return [];
+    const d = pathThrough(series.map((p) => [x(p.day), y(p.cost)]));
+    return [svg('path', { d, class: 'chart-halo' }), svg('path', { d, class: 'chart-line chart-inleg' })];
+  };
   plot(container, series, {
     ticks,
     formatTick: percent ? formatPercent : axisFormatter(ticks),
@@ -167,13 +172,13 @@ export function renderStack(container, series, { tones, percent, formatDate, des
     formatDate,
     describe,
     onSelect,
-    draw: (x, y) => tones.flatMap((tone, layer) => {
+    draw: (x, y) => [...tones.flatMap((tone, layer) => {
       const top = series.map((p, i) => [x(p.day), y(stacks[i][layer][1])]);
       const bottom = series.map((p, i) => [x(p.day), y(stacks[i][layer][0])]).reverse();
       return [
         svg('path', { d: `${pathThrough([...top, ...bottom])}Z`, class: `chart-area ${tone}` }),
         svg('path', { d: pathThrough(top), class: 'chart-seam' }),
       ];
-    }),
+    }), ...costLine(x, y)],
   });
 }

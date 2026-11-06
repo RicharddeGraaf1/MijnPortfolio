@@ -1,8 +1,8 @@
 # Mijn Portfolio
 
 Telefoon-app (PWA) die laat zien welke beleggingen je hebt, wat ze kostten en wat ze nu waard zijn,
-apart voor privé en zakelijk. Met een grafiek van waarde tegenover betaald bedrag, en een eigen scherm
-per positie.
+apart voor privé en zakelijk. Met een grafiek van de verdeling per rekening of belegging tegenover je
+inleg, en een eigen scherm per positie, ook per aandeel: koers tegenover je gemiddelde aankoopprijs.
 
 ## Waar je gegevens staan
 

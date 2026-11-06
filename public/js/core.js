@@ -196,7 +196,7 @@ function holdingOn(t, day) {
   return { value: holding.qty * (asOf(t.points, day) ?? 0), cost: holding.cost };
 }
 
-// Waarde en betaald bedrag per dag, teruggebracht tot maximaal ongeveer `maxPoints` punten.
+// Waarde en inleg per dag, teruggebracht tot maximaal ongeveer `maxPoints` punten.
 export function valueSeries(positions, { from = null, to, maxPoints = 240 }) {
   const tracks = positions.map(track);
   return seriesDays(tracks, from, to, maxPoints).map((day) => {
@@ -211,13 +211,26 @@ export function valueSeries(positions, { from = null, to, maxPoints = 240 }) {
   });
 }
 
-// Waarde per groep per dag, voor een gestapelde grafiek: `groups` is een lijst van lijsten posities,
-// `parts` staat in dezelfde volgorde.
+// Waarde en inleg per groep per dag, voor een gestapelde grafiek: `groups` is een lijst van lijsten
+// posities; `parts` (waarde) en `costs` (inleg) staan in dezelfde volgorde.
 export function breakdownSeries(groups, { from = null, to, maxPoints = 240 }) {
   const tracks = groups.map((positions) => positions.map(track));
+  const sum = (list) => list.reduce((total, amount) => total + amount, 0);
   return seriesDays(tracks.flat(), from, to, maxPoints).map((day) => {
-    const parts = tracks.map((group) => group.reduce((sum, t) => sum + holdingOn(t, day).value, 0));
-    return { day, parts, value: parts.reduce((sum, part) => sum + part, 0) };
+    const holdings = tracks.map((group) => group.map((t) => holdingOn(t, day)));
+    const parts = holdings.map((group) => sum(group.map((holding) => holding.value)));
+    const costs = holdings.map((group) => sum(group.map((holding) => holding.cost)));
+    return { day, parts, costs, value: sum(parts), cost: sum(costs) };
+  });
+}
+
+// Koers en gemiddelde aankoopprijs per stuk, alleen op dagen dat je de belegging had.
+export function unitSeries(position, { from = null, to, maxPoints = 240 }) {
+  const t = track(position);
+  return seriesDays([t], from, to, maxPoints).flatMap((day) => {
+    const holding = asOf(t.steps, day);
+    if (!holding || holding.qty === 0) return [];
+    return [{ day, value: asOf(t.points, day) ?? 0, cost: holding.cost / holding.qty }];
   });
 }
 

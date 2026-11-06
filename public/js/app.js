@@ -1,7 +1,7 @@
 import { renderChart, renderStack } from './chart.js';
 import {
   breakdownSeries, fromDay, fxSymbol, ledger, monthlyRows, parseNumber, rangeStart, summarize, toDay, todayIso, totals,
-  valueSeries,
+  unitSeries, valueSeries,
 } from './core.js';
 import { lastFetchedAt, peekQuote, quotes, refreshQuotes, searchSymbols } from './quotes.js';
 import {
@@ -12,14 +12,18 @@ import {
 const PORTFOLIOS = { prive: 'Privé', zakelijk: 'Zakelijk' };
 const TABS = { alles: 'Alles', ...PORTFOLIOS };
 const RANGES = ['1M', '6M', '1J', 'Altijd'];
-const VIEWS = { totaal: 'Totaal', rekening: 'Rekeningen', belegging: 'Beleggingen' };
+const VIEWS = { rekening: 'Rekeningen', belegging: 'Beleggingen', totaal: 'Positie', stuk: 'Per aandeel' };
 // Het palet heeft acht kleuren; meer groepen komen samen in Overig, want een negende kleur is niet te onderscheiden.
 const SERIES_SLOTS = 8;
 const OTHER_TONE = 'series-other';
 
 // filter: null, 'rekening:<naam>' of 'belegging:<ticker of id>'; werkt binnen de gekozen tab.
-// view: hoe de grafiek de waarde verdeelt; unit: 'eur' of 'pct' bij een verdeling.
-const state = { tab: 'alles', range: 'Altijd', filter: null, view: 'totaal', unit: 'eur', refreshing: false, refreshFailed: false };
+// view: hoe de grafiek de waarde verdeelt; unit: 'eur' of 'pct' bij een verdeling; otherOpen: grijze groep uitgeklapt.
+// positionView: op het positiescherm de hele positie ('totaal') of per aandeel ('stuk').
+const state = {
+  tab: 'alles', range: 'Altijd', filter: null, view: 'rekening', unit: 'eur', otherOpen: false, positionView: 'totaal',
+  refreshing: false, refreshFailed: false,
+};
 const app = document.getElementById('app');
 
 // ---------- Opmaak ----------
@@ -130,14 +134,15 @@ function filterOptions(items) {
   };
 }
 
-// Een verdeling heeft pas zin met twee of meer groepen.
+// Een verdeling heeft pas zin met twee of meer groepen. Zonder verdeling toont de grafiek waarde tegenover inleg.
 function availableViews(items) {
   const accounts = new Set(items.map(({ position }) => position.account ?? ''));
-  return ['totaal', accounts.size > 1 && 'rekening', bySecurity(items).length > 1 && 'belegging'].filter(Boolean);
+  return [accounts.size > 1 && 'rekening', bySecurity(items).length > 1 && 'belegging'].filter(Boolean);
 }
 
 // Rekeningen houden overal dezelfde kleur, op alfabet over alle gegevens. Beleggingen krijgen hun kleur
-// op volgorde van waarde. Past het niet in het palet, dan gaat de rest samen in Overig.
+// op volgorde van waarde. Past het niet in het palet, dan gaat de rest samen in één grijze groep, die
+// zijn leden (`members`) bewaart zodat de legenda ze kan uitklappen.
 function breakdownGroups(items, view) {
   let groups;
   if (view === 'rekening') {
@@ -155,11 +160,16 @@ function breakdownGroups(items, view) {
   const slots = groups.length <= SERIES_SLOTS ? SERIES_SLOTS : SERIES_SLOTS - 1;
   const kept = groups.filter((group) => group.slot != null && group.slot < slots);
   const rest = groups.filter((group) => !kept.includes(group));
-  const result = kept.map((group) => ({ label: group.label, tone: `series-${group.slot + 1}`, items: group.items }));
-  if (rest.length) {
-    result.push({ label: rest.length === 1 ? rest[0].label : 'Overig', tone: OTHER_TONE, items: rest.flatMap((group) => group.items) });
-  }
+  const member = ({ label, items: list }) => ({ label, items: list });
+  const result = kept.map((group) => ({ tone: `series-${group.slot + 1}`, members: [member(group)] }));
+  if (rest.length) result.push({ tone: OTHER_TONE, members: rest.map(member), other: view });
   return result;
+}
+
+// "Overig" zegt niet wat erin zit; de naam noemt hoeveel en wat.
+function groupLabel(group, count) {
+  if (!group.other || count === 1) return group.members[0].label;
+  return group.other === 'belegging' ? `${count} kleinere beleggingen` : `${count} andere rekeningen`;
 }
 
 function filterSelect(items, rerender) {
@@ -199,10 +209,10 @@ function rangeRow(rerender) {
   });
 }
 
-function viewRow(views, view, rerender) {
+function viewRow(views, view, stateKey, rerender) {
   if (views.length < 2) return null;
-  return toggleGroup('Verdeling', views.map((key) => ({ key, text: VIEWS[key] })), view, (key) => {
-    state.view = key;
+  return toggleGroup('Weergave', views.map((key) => ({ key, text: VIEWS[key] })), view, (key) => {
+    state[stateKey] = key;
     rerender();
   });
 }
@@ -220,15 +230,19 @@ function unitRow(rerender) {
 const axisFormatFor = (series) =>
   series.at(-1).day - series[0].day > 400 ? { month: 'short', year: 'numeric' } : { day: 'numeric', month: 'short' };
 
-// `views` zijn de verdelingen die op dit scherm kunnen; zonder krijg je alleen waarde tegenover betaald.
-function chartBlock(items, rerender, views = ['totaal']) {
+// `views` zijn de weergaven die op dit scherm kunnen, `stateKey` onthoudt de keuze. Zonder weergaven
+// toont de grafiek waarde tegenover inleg.
+function chartBlock(items, rerender, views = [], stateKey = 'view') {
   const today = todayIso();
   const range = { from: rangeStart(state.range, today), to: toDay(today) };
-  const view = views.includes(state.view) ? state.view : 'totaal';
+  const view = views.includes(state[stateKey]) ? state[stateKey] : views[0] ?? 'totaal';
+  const stacked = view === 'rekening' || view === 'belegging';
   const wrapper = h('div', { class: 'chart-block' },
-    viewRow(views, view, rerender),
-    h('div', { class: 'chart-controls' }, rangeRow(rerender), view === 'totaal' ? null : unitRow(rerender)));
-  const chart = view === 'totaal' ? totalChart(items, range) : stackChart(items, view, range);
+    viewRow(views, view, stateKey, rerender),
+    h('div', { class: 'chart-controls' }, rangeRow(rerender), stacked ? unitRow(rerender) : null));
+  const chart = stacked ? stackChart(items, view, range)
+    : view === 'stuk' ? unitChart(items[0], range)
+      : totalChart(items, range);
 
   if (chart.series.length < 2) {
     wrapper.append(h('p', { class: 'chart-empty' },
@@ -241,87 +255,164 @@ function chartBlock(items, rerender, views = ['totaal']) {
   return { element: wrapper, series: chart.series, mount: chart.mount, table: chart.table };
 }
 
-function totalChart(items, range) {
-  const series = valueSeries(chartPositions(items), range);
+// Twee lijnen: `value` doorgetrokken, `cost` gestippeld. Gebruikt voor waarde tegenover inleg en
+// voor koers tegenover gemiddelde aankoopprijs.
+function lineChart(series, { valueLabel, costLabel, describe, columns, format }) {
   if (series.length < 2) return { series };
-
   const readoutDate = h('span', { class: 'readout-date' });
   const readoutValue = h('strong');
   const readoutCost = h('strong');
   const holder = h('div', { class: 'chart-holder' });
-  const first = series[0];
-  const last = series.at(-1);
   const axisFormat = axisFormatFor(series);
   return {
     series,
     elements: [
       h('div', { class: 'readout' },
         readoutDate,
-        h('span', { class: 'readout-item' }, h('span', { class: 'key key-value' }), readoutValue, ' waarde'),
-        h('span', { class: 'readout-item' }, h('span', { class: 'key key-cost' }), readoutCost, ' betaald')),
+        h('span', { class: 'readout-item' }, h('span', { class: 'key key-value' }), readoutValue, ` ${valueLabel}`),
+        h('span', { class: 'readout-item' }, h('span', { class: 'key key-cost' }), readoutCost, ` ${costLabel}`)),
       holder,
     ],
     mount: () => renderChart(holder, series, {
-      describe: `Grafiek van ${date(fromDay(first.day))} tot ${date(fromDay(last.day))}: waarde van ${eur(first.value)} naar ${eur(last.value)}, betaald ${eur(last.cost)}.`,
+      describe: describe(series[0], series.at(-1)),
       formatDate: (day) => date(fromDay(day), axisFormat),
       onSelect: (point) => {
         readoutDate.textContent = date(fromDay(point.day));
-        readoutValue.textContent = eurHero(point.value);
-        readoutCost.textContent = eurHero(point.cost);
+        readoutValue.textContent = format(point.value);
+        readoutCost.textContent = format(point.cost);
       },
     }),
-    table: monthlyTable(['Waarde', 'Betaald'], monthlyRows(series).map((row) => [row.month, eur(row.value), eur(row.cost)])),
+    table: monthlyTable(columns, monthlyRows(series).map((row) => [row.month, eur(row.value), eur(row.cost)])),
   };
 }
 
-// Gestapeld per rekening of belegging. De legenda staat in dezelfde volgorde als de lagen: bovenste eerst.
+function totalChart(items, range) {
+  const span = (first, last) => `van ${date(fromDay(first.day))} tot ${date(fromDay(last.day))}`;
+  return lineChart(valueSeries(chartPositions(items), range), {
+    valueLabel: 'waarde',
+    costLabel: 'ingelegd',
+    columns: ['Waarde', 'Inleg'],
+    format: eurHero,
+    describe: (first, last) => `Grafiek ${span(first, last)}: waarde van ${eur(first.value)} naar ${eur(last.value)}, ingelegd ${eur(last.cost)}.`,
+  });
+}
+
+function unitChart({ position, summary }, range) {
+  return lineChart(unitSeries({ txs: position.txs, points: summary.points }, range), {
+    valueLabel: 'koers',
+    costLabel: 'gem. aankoopprijs',
+    columns: ['Koers', 'Gem. aankoopprijs'],
+    format: eur,
+    describe: (first, last) => `Koers per stuk van ${date(fromDay(first.day))} tot ${date(fromDay(last.day))}: van ${eur(first.value)} naar ${eur(last.value)}, gemiddelde aankoopprijs ${eur(last.cost)}.`,
+  });
+}
+
+const sumAt = (indices, list) => indices.reduce((total, i) => total + list[i], 0);
+
+// Gestapeld per rekening of belegging, met de inleg als stippellijn. De legenda staat in dezelfde volgorde
+// als de lagen (bovenste eerst) en toont per groep inleg en waarde op het gekozen punt; de grijze groep
+// klapt uit tot zijn leden.
 function stackChart(items, view, range) {
   const allGroups = breakdownGroups(items, view);
-  const raw = breakdownSeries(allGroups.map((group) => chartPositions(group.items)), range);
-  // Groepen die in deze periode niets waard waren, horen niet in de legenda.
-  const used = allGroups.map((_, i) => raw.some((point) => point.parts[i] > 0));
-  const groups = allGroups.filter((_, i) => used[i]);
-  const series = raw.map((point) => ({ ...point, parts: point.parts.filter((_, i) => used[i]) }));
+  const members = allGroups.flatMap((group) => group.members);
+  const raw = breakdownSeries(members.map((member) => chartPositions(member.items)), range);
+  // Wat in deze periode niets waard was en niets kostte, hoort niet in de legenda.
+  const used = members.map((_, i) => raw.some((point) => point.parts[i] > 0 || point.costs[i] > 0));
+  let offset = 0;
+  const groups = allGroups.map((group) => {
+    const indices = group.members.map((_, j) => offset + j).filter((i) => used[i]);
+    offset += group.members.length;
+    return { ...group, indices, label: groupLabel(group, indices.length) };
+  }).filter((group) => group.indices.length);
+  const series = raw.map((point) => ({
+    ...point,
+    parts: groups.map((group) => sumAt(group.indices, point.parts)),
+    costs: groups.map((group) => sumAt(group.indices, point.costs)),
+    memberParts: point.parts,
+    memberCosts: point.costs,
+  }));
   if (series.length < 2) return { series };
 
   const percent = state.unit === 'pct';
-  const amount = (point, i) => (percent ? share(point.value > 0 ? point.parts[i] / point.value : 0) : eurHero(point.parts[i]));
-  const readoutDate = h('span', { class: 'readout-date' });
-  // Het totaal staat ook in procenten in euro: 100% zegt niets.
-  const readoutTotal = h('span', { class: 'legend-value' });
-  const legendValues = groups.map(() => h('span', { class: 'legend-value' }));
-  const legend = h('ul', { class: 'legend' },
-    groups.map((group, i) => h('li', { class: 'legend-item' },
+  const ratio = (part, whole) => share(whole > 0 ? part / whole : 0);
+  const shown = (point, part, cost) => (percent
+    ? [ratio(cost, point.cost), ratio(part, point.value)]
+    : [eurHero(cost), eurHero(part)]);
+
+  // Elke regel krijgt twee cellen (inleg, waarde) die bij elk gekozen punt worden bijgewerkt.
+  const updaters = [];
+  const cells = (read) => {
+    const cost = h('span', { class: 'legend-value' });
+    const value = h('span', { class: 'legend-value' });
+    updaters.push((point) => {
+      [cost.textContent, value.textContent] = read(point);
+    });
+    return [cost, value];
+  };
+  const rows = groups.map((group, i) => {
+    const grouped = group.other && group.indices.length > 1;
+    const subRows = grouped ? group.indices.map((m) => h('li', { class: 'legend-item legend-sub', hidden: !state.otherOpen },
+      h('span'),
+      h('span', { class: 'legend-name' }, members[m].label),
+      cells((point) => shown(point, point.memberParts[m], point.memberCosts[m])))) : [];
+    const name = grouped
+      ? h('button', {
+        type: 'button',
+        class: 'legend-name legend-toggle',
+        'aria-expanded': String(state.otherOpen),
+        onclick: (event) => {
+          state.otherOpen = !state.otherOpen;
+          event.currentTarget.setAttribute('aria-expanded', String(state.otherOpen));
+          subRows.forEach((row) => { row.hidden = !state.otherOpen; });
+        },
+      }, group.label)
+      : h('span', { class: 'legend-name' }, group.label);
+    return [h('li', { class: 'legend-item' },
       h('span', { class: `swatch ${group.tone}` }),
-      h('span', { class: 'legend-name' }, group.label),
-      legendValues[i])).reverse(),
-    h('li', { class: 'legend-item legend-total' }, h('span'), h('span', { class: 'legend-name' }, 'Totaal'), readoutTotal));
+      name,
+      cells((point) => shown(point, point.parts[i], point.costs[i]))), ...subRows];
+  }).reverse();
+  // Het totaal staat ook in procenten in euro: 100% zegt niets.
+  const totalRow = h('li', { class: 'legend-item legend-total' },
+    h('span'), h('span', { class: 'legend-name' }, 'Totaal'), cells((point) => [eurHero(point.cost), eurHero(point.value)]));
+  const legend = h('ul', { class: 'legend' },
+    h('li', { class: 'legend-item legend-head', 'aria-hidden': 'true' },
+      h('span'), h('span'), h('span', { class: 'legend-value' }, 'Inleg'), h('span', { class: 'legend-value' }, 'Waarde')),
+    rows,
+    totalRow);
+
+  const readoutDate = h('span', { class: 'readout-date' });
   const holder = h('div', { class: 'chart-holder' });
   const first = series[0];
   const last = series.at(-1);
   const axisFormat = axisFormatFor(series);
-  const split = groups.map((group, i) => `${group.label} ${share(last.value > 0 ? last.parts[i] / last.value : 0)}`).join(', ');
+  const split = groups.map((group, i) => `${group.label} ${ratio(last.parts[i], last.value)}`).join(', ');
   return {
     series,
     elements: [
-      h('div', { class: 'readout' }, readoutDate),
+      h('div', { class: 'readout' },
+        readoutDate,
+        percent ? null : h('span', { class: 'readout-item' }, h('span', { class: 'key key-inleg' }), 'inleg')),
       holder,
       legend,
     ],
     mount: () => renderStack(holder, series, {
       tones: groups.map((group) => group.tone),
       percent,
-      describe: `Verdeling per ${view} van ${date(fromDay(first.day))} tot ${date(fromDay(last.day))}. Op ${date(fromDay(last.day))}: ${split}.`,
+      describe: `Verdeling per ${view} van ${date(fromDay(first.day))} tot ${date(fromDay(last.day))}. Op ${date(fromDay(last.day))}: ${split}; ingelegd ${eur(last.cost)}.`,
       formatDate: (day) => date(fromDay(day), axisFormat),
       onSelect: (point) => {
         readoutDate.textContent = date(fromDay(point.day));
-        readoutTotal.textContent = eurHero(point.value);
-        legendValues.forEach((element, i) => { element.textContent = amount(point, i); });
+        updaters.forEach((update) => update(point));
       },
     }),
     table: monthlyTable(
-      [...groups.map((group) => group.label), ...(percent ? [] : ['Totaal'])],
-      monthlyRows(series).map((row) => [row.month, ...groups.map((_, i) => amount(row, i)), ...(percent ? [] : [eur(row.value)])]),
+      [...groups.map((group) => group.label), ...(percent ? [] : ['Totaal', 'Inleg'])],
+      monthlyRows(series).map((row) => [
+        row.month,
+        ...groups.map((_, i) => (percent ? ratio(row.parts[i], row.value) : eur(row.parts[i]))),
+        ...(percent ? [] : [eur(row.value), eur(row.cost)]),
+      ]),
     ),
   };
 }
@@ -390,6 +481,7 @@ function positionRow({ position, summary }) {
         h('span', { class: 'row-meta' }, `${details}, ${pieces(summary.qty)}`)),
       h('span', { class: 'row-numbers' },
         h('span', { class: 'row-value' }, eur(summary.value)),
+        h('span', { class: 'row-cost' }, `${eur(summary.cost)} ingelegd`),
         h('span', { class: `row-gain ${direction(summary.gain)}` }, `${signedEur(summary.gain)} ${signedPct(summary.gainPct)}`.trim()))));
 }
 
@@ -403,11 +495,14 @@ function closedRow({ position, summary }) {
         h('span', { class: `row-gain ${direction(summary.realized)}` }, signedEur(summary.realized)))));
 }
 
+// `total` is { value, cost } of leeg.
 function section(title, items, total) {
   return h('section', { class: 'group' },
     h('div', { class: 'group-head' },
       h('h2', {}, title),
-      total != null ? h('span', { class: 'group-total' }, eur(total)) : null),
+      total ? h('span', { class: 'group-total' },
+        h('span', {}, eur(total.value)),
+        h('span', { class: 'group-cost' }, `${eur(total.cost)} ingelegd`)) : null),
     h('ul', { class: 'rows' }, items));
 }
 
@@ -471,7 +566,7 @@ function renderHome() {
     top: tabs,
     filter: filterSelect(inTab, rerender),
     figure: eurHero(total.value),
-    lines: inTab.length ? [gainLine(total.gain, total.gainPct), `${eurHero(total.cost)} betaald`] : [],
+    lines: inTab.length ? [gainLine(total.gain, total.gainPct), `${eurHero(total.cost)} ingelegd`] : [],
     chart,
   });
 
@@ -487,7 +582,7 @@ function renderHome() {
     if (state.tab === 'alles') {
       for (const [key, label] of Object.entries(PORTFOLIOS)) {
         const items = open.filter((item) => item.position.portfolio === key);
-        if (items.length) body.append(section(label, items.map(positionRow), totals(items.map((item) => item.summary)).value));
+        if (items.length) body.append(section(label, items.map(positionRow), totals(items.map((item) => item.summary))));
       }
     } else if (open.length) {
       body.append(section('Posities', open.map(positionRow)));
@@ -558,10 +653,10 @@ function renderPosition(id) {
     h('a', { class: 'back', href: '#/' }, icon(ICON_BACK), 'Overzicht'),
     h('span', { class: 'hero-tag' }, [PORTFOLIOS[position.portfolio], position.account].filter(Boolean).join(', ')));
 
-  const chart = chartBlock([item], rerender);
+  const chart = chartBlock([item], rerender, summary.closed ? [] : ['totaal', 'stuk'], 'positionView');
   const lines = summary.closed
     ? [`Volledig verkocht, ${signedEurHero(summary.realized)} resultaat`]
-    : [gainLine(summary.gain, summary.gainPct), `${eurHero(summary.cost)} betaald`];
+    : [gainLine(summary.gain, summary.gainPct), `${eurHero(summary.cost)} ingelegd`];
   const head = hero({ top, title: position.name, figure: eurHero(summary.value), lines, chart });
 
   const stats = h('dl', { class: 'stats' },

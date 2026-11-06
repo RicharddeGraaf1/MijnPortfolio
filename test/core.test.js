@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   asOf, breakdownSeries, fromDay, fxSymbol, ledger, monthlyRows, parseNumber, pricePoints, rangeStart, summarize,
-  toDay, totals, validateBackup, valueSeries,
+  toDay, totals, unitSeries, validateBackup, valueSeries,
 } from '../public/js/core.js';
 
 const buy = (date, qty, price, fee = 0) => ({ type: 'buy', date, qty, price, fee });
@@ -172,7 +172,21 @@ test('breakdownSeries geeft per groep de waarde, en samen het totaal', () => {
   const series = breakdownSeries([[a], [b, c]], { to: d('2024-01-03') });
   assert.deepEqual(series.map((p) => p.parts), [[20, 0], [20, 50], [30, 70]]);
   assert.deepEqual(series.map((p) => p.value), [20, 70, 100]);
+  assert.deepEqual(series.map((p) => p.costs), [[20, 0], [20, 50], [20, 70]]);
+  assert.deepEqual(series.map((p) => p.cost), [20, 70, 90]);
   assert.deepEqual(series.map((p) => p.day), valueSeries([a, b, c], { to: d('2024-01-03') }).map((p) => p.day));
+});
+
+test('unitSeries geeft koers en gemiddelde aankoopprijs, en slaat dagen zonder stukken over', () => {
+  const d = toDay;
+  const position = {
+    txs: [buy('2024-01-01', 2, 10, 2), buy('2024-01-02', 2, 20), sell('2024-01-03', 4, 30), buy('2024-01-05', 1, 40)],
+    points: [[d('2024-01-01'), 10], [d('2024-01-02'), 20], [d('2024-01-03'), 30], [d('2024-01-05'), 40]],
+  };
+  const series = unitSeries(position, { to: d('2024-01-05') });
+  assert.deepEqual(series.map((p) => fromDay(p.day)), ['2024-01-01', '2024-01-02', '2024-01-05']);
+  assert.deepEqual(series.map((p) => p.value), [10, 20, 40]);
+  assert.deepEqual(series.map((p) => p.cost), [11, 15.5, 40]);
 });
 
 test('monthlyRows geeft het laatste punt per maand, nieuwste eerst', () => {
