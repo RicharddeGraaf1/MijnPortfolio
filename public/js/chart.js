@@ -1,5 +1,5 @@
-// Lijngrafiek van waarde tegenover betaald bedrag. Kleuren komen uit de CSS, zodat de
-// grafiek meekleurt met de portefeuille. Teksten gaan via textContent: namen zijn gebruikersinvoer.
+// Lijngrafiek van waarde tegenover betaald bedrag, en een gestapelde grafiek van de verdeling.
+// Kleuren komen uit de CSS. Teksten gaan via textContent: namen zijn gebruikersinvoer.
 const SVG = 'http://www.w3.org/2000/svg';
 
 const svg = (name, attributes = {}, text) => {
@@ -32,23 +32,21 @@ function axisFormatter(ticks) {
   return (value) => value.toLocaleString('nl-NL', { maximumFractionDigits: 2 });
 }
 
-const linePath = (points, x, y, key) =>
-  points.map((p, i) => `${i ? 'L' : 'M'}${x(p.day).toFixed(1)} ${y(p[key]).toFixed(1)}`).join('');
+const PERCENT_TICKS = [0, 25, 50, 75, 100];
+const formatPercent = (value) => `${value}%`;
 
-// `onSelect(punt)` krijgt het gekozen punt, of het laatste punt zodra je loslaat.
-export function renderChart(container, series, { formatDate, describe, onSelect }) {
+const pathThrough = (coordinates) =>
+  coordinates.map(([px, py], i) => `${i ? 'L' : 'M'}${px.toFixed(1)} ${py.toFixed(1)}`).join('');
+
+// Assen, rasterlijnen en de bediening die beide grafieken delen. `draw(x, y)` tekent de lijnen of vlakken.
+function plot(container, series, { ticks, formatTick, height, formatDate, describe, onSelect, draw, dotKey }) {
   container.replaceChildren();
   const width = container.clientWidth || 340;
-  const height = 176;
   const margin = { top: 10, right: 8, bottom: 24, left: 46 };
   const plotWidth = width - margin.left - margin.right;
   const plotHeight = height - margin.top - margin.bottom;
-
-  const values = series.flatMap((point) => [point.value, point.cost]);
-  const ticks = niceTicks(Math.min(...values), Math.max(...values));
   const yMin = ticks[0];
   const yMax = ticks.at(-1);
-  const formatTick = axisFormatter(ticks);
   const firstDay = series[0].day;
   const lastDay = series.at(-1).day;
 
@@ -79,21 +77,20 @@ export function renderChart(container, series, { formatDate, describe, onSelect 
     root.append(svg('text', { x: x(day), y: height - 6, 'text-anchor': anchor, class: 'chart-axis' }, formatDate(Math.round(day))));
   }
 
-  root.append(
-    svg('path', { d: linePath(series, x, y, 'cost'), class: 'chart-line chart-cost' }),
-    svg('path', { d: linePath(series, x, y, 'value'), class: 'chart-line chart-value' }),
-  );
+  root.append(...draw(x, y));
 
   const crosshair = svg('line', { y1: margin.top, y2: margin.top + plotHeight, class: 'chart-crosshair', visibility: 'hidden' });
-  const dot = svg('circle', { r: 4, class: 'chart-dot' });
-  root.append(crosshair, dot);
+  const dot = dotKey ? svg('circle', { r: 4, class: 'chart-dot' }) : null;
+  root.append(...[crosshair, dot].filter(Boolean));
 
   let selected = series.length - 1;
   const select = (index, active) => {
     selected = Math.max(0, Math.min(series.length - 1, index));
     const point = series[selected];
-    dot.setAttribute('cx', x(point.day));
-    dot.setAttribute('cy', y(point.value));
+    if (dot) {
+      dot.setAttribute('cx', x(point.day));
+      dot.setAttribute('cy', y(point[dotKey]));
+    }
     crosshair.setAttribute('x1', x(point.day));
     crosshair.setAttribute('x2', x(point.day));
     crosshair.setAttribute('visibility', active ? 'visible' : 'hidden');
@@ -131,4 +128,52 @@ export function renderChart(container, series, { formatDate, describe, onSelect 
 
   container.append(root);
   select(series.length - 1, false);
+}
+
+// `onSelect(punt)` krijgt het gekozen punt, of het laatste punt zodra je loslaat.
+export function renderChart(container, series, { formatDate, describe, onSelect }) {
+  const values = series.flatMap((point) => [point.value, point.cost]);
+  const ticks = niceTicks(Math.min(...values), Math.max(...values));
+  const line = (x, y, key) => pathThrough(series.map((p) => [x(p.day), y(p[key])]));
+  plot(container, series, {
+    ticks,
+    formatTick: axisFormatter(ticks),
+    height: 176,
+    formatDate,
+    describe,
+    onSelect,
+    dotKey: 'value',
+    draw: (x, y) => [
+      svg('path', { d: line(x, y, 'cost'), class: 'chart-line chart-cost' }),
+      svg('path', { d: line(x, y, 'value'), class: 'chart-line chart-value' }),
+    ],
+  });
+}
+
+// Gestapelde vlakken: `series` heeft per punt `parts` in de volgorde van `tones` (CSS-klassen), onderste laag eerst.
+// Met `percent` telt elke dag op tot 100%.
+export function renderStack(container, series, { tones, percent, formatDate, describe, onSelect }) {
+  const layersAt = (point) => {
+    const scale = percent ? (point.value > 0 ? 100 / point.value : 0) : 1;
+    let sum = 0;
+    return point.parts.map((part) => [sum, (sum += part * scale)]);
+  };
+  const stacks = series.map(layersAt);
+  const ticks = percent ? PERCENT_TICKS : niceTicks(0, Math.max(...series.map((p) => p.value)));
+  plot(container, series, {
+    ticks,
+    formatTick: percent ? formatPercent : axisFormatter(ticks),
+    height: 200,
+    formatDate,
+    describe,
+    onSelect,
+    draw: (x, y) => tones.flatMap((tone, layer) => {
+      const top = series.map((p, i) => [x(p.day), y(stacks[i][layer][1])]);
+      const bottom = series.map((p, i) => [x(p.day), y(stacks[i][layer][0])]).reverse();
+      return [
+        svg('path', { d: `${pathThrough([...top, ...bottom])}Z`, class: `chart-area ${tone}` }),
+        svg('path', { d: pathThrough(top), class: 'chart-seam' }),
+      ];
+    }),
+  });
 }

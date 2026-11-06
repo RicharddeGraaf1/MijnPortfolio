@@ -171,35 +171,53 @@ export function rangeStart(range, today) {
   return toDay(date.toISOString().slice(0, 10));
 }
 
-// Waarde en betaald bedrag per dag, teruggebracht tot maximaal ongeveer `maxPoints` punten.
-export function valueSeries(positions, { from = null, to, maxPoints = 240 }) {
-  const tracks = positions
-    .map((position) => ({
-      steps: ledger(position.txs).steps.map((step) => [step.day, step]),
-      points: position.points,
-    }))
-    .filter((track) => track.steps.length > 0);
-  if (tracks.length === 0) return [];
+const track = (position) => ({
+  steps: ledger(position.txs).steps.map((step) => [step.day, step]),
+  points: position.points,
+});
 
-  const firstDay = Math.min(...tracks.map((track) => track.steps[0][0]));
+// Dagen vanaf de eerste aankoop (of `from`) tot en met `to`, maximaal ongeveer `maxPoints`.
+function seriesDays(tracks, from, to, maxPoints) {
+  const started = tracks.filter((t) => t.steps.length > 0);
+  if (started.length === 0) return [];
+  const firstDay = Math.min(...started.map((t) => t.steps[0][0]));
   const start = from == null ? firstDay : Math.max(firstDay, from);
   if (start > to) return [];
-
   const step = Math.max(1, Math.ceil((to - start) / maxPoints));
   const days = [];
   for (let day = start; day < to; day += step) days.push(day);
   days.push(to);
+  return days;
+}
 
-  return days.map((day) => {
+function holdingOn(t, day) {
+  const holding = asOf(t.steps, day);
+  if (!holding || holding.qty === 0) return { value: 0, cost: 0 };
+  return { value: holding.qty * (asOf(t.points, day) ?? 0), cost: holding.cost };
+}
+
+// Waarde en betaald bedrag per dag, teruggebracht tot maximaal ongeveer `maxPoints` punten.
+export function valueSeries(positions, { from = null, to, maxPoints = 240 }) {
+  const tracks = positions.map(track);
+  return seriesDays(tracks, from, to, maxPoints).map((day) => {
     let value = 0;
     let cost = 0;
-    for (const track of tracks) {
-      const holding = asOf(track.steps, day);
-      if (!holding || holding.qty === 0) continue;
-      value += holding.qty * (asOf(track.points, day) ?? 0);
+    for (const t of tracks) {
+      const holding = holdingOn(t, day);
+      value += holding.value;
       cost += holding.cost;
     }
     return { day, value, cost };
+  });
+}
+
+// Waarde per groep per dag, voor een gestapelde grafiek: `groups` is een lijst van lijsten posities,
+// `parts` staat in dezelfde volgorde.
+export function breakdownSeries(groups, { from = null, to, maxPoints = 240 }) {
+  const tracks = groups.map((positions) => positions.map(track));
+  return seriesDays(tracks.flat(), from, to, maxPoints).map((day) => {
+    const parts = tracks.map((group) => group.reduce((sum, t) => sum + holdingOn(t, day).value, 0));
+    return { day, parts, value: parts.reduce((sum, part) => sum + part, 0) };
   });
 }
 

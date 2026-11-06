@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  asOf, fromDay, fxSymbol, ledger, monthlyRows, parseNumber, pricePoints, rangeStart, summarize,
+  asOf, breakdownSeries, fromDay, fxSymbol, ledger, monthlyRows, parseNumber, pricePoints, rangeStart, summarize,
   toDay, totals, validateBackup, valueSeries,
 } from '../public/js/core.js';
 
@@ -162,6 +162,17 @@ test('valueSeries begint niet vóór de eerste aankoop en eindigt altijd op de l
 
 test('valueSeries is leeg zonder beleggingen', () => {
   assert.deepEqual(valueSeries([], { to: 100 }), []);
+});
+
+test('breakdownSeries geeft per groep de waarde, en samen het totaal', () => {
+  const d = toDay;
+  const a = { txs: [buy('2024-01-01', 2, 10)], points: [[d('2024-01-01'), 10], [d('2024-01-03'), 15]] };
+  const b = { txs: [buy('2024-01-02', 1, 50)], points: [[d('2024-01-02'), 50]] };
+  const c = { txs: [buy('2024-01-03', 1, 20)], points: [[d('2024-01-03'), 20]] };
+  const series = breakdownSeries([[a], [b, c]], { to: d('2024-01-03') });
+  assert.deepEqual(series.map((p) => p.parts), [[20, 0], [20, 50], [30, 70]]);
+  assert.deepEqual(series.map((p) => p.value), [20, 70, 100]);
+  assert.deepEqual(series.map((p) => p.day), valueSeries([a, b, c], { to: d('2024-01-03') }).map((p) => p.day));
 });
 
 test('monthlyRows geeft het laatste punt per maand, nieuwste eerst', () => {
