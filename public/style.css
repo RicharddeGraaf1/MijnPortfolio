@@ -156,11 +156,14 @@ a { text-decoration: none; }
 .chart-block { margin-top: 20px; }
 
 .toggles { display: inline-flex; gap: 2px; padding: 2px; border-radius: 10px; background: var(--paper); }
-.toggle { min-width: 40px; min-height: 36px; padding: 0 10px; font-size: 14px; font-weight: 500; border-radius: 8px; color: var(--ink-soft); }
+.toggle { min-width: 36px; min-height: 36px; padding: 0 8px; font-size: 14px; font-weight: 500; border-radius: 8px; color: var(--ink-soft); }
 .toggle[aria-pressed='true'] { background: var(--ink); color: var(--raised); font-weight: 600; }
 
 .chart-controls { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
 .toggles + .chart-controls { margin-top: 8px; }
+
+.check { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; font-size: 14px; color: var(--ink-soft); cursor: pointer; }
+.check input { width: 18px; height: 18px; margin: 0; accent-color: var(--ink); }
 
 .readout { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 14px; margin-top: 12px; font-size: 14px; min-height: 40px; align-content: flex-start; }
 .readout-date { flex-basis: 100%; color: var(--ink-soft); }

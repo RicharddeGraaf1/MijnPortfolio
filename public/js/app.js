@@ -1,7 +1,7 @@
 import { renderChart, renderStack } from './chart.js';
 import {
-  breakdownSeries, fromDay, fxSymbol, ledger, monthlyRows, parseNumber, rangeStart, summarize, toDay, todayIso, totals,
-  unitSeries, valueSeries,
+  breakdownSeries, chartPeriod, fromDay, fxSymbol, ledger, monthlyRows, parseNumber, periodChange, summarize, todayIso,
+  totals, unitSeries, valueSeries,
 } from './core.js';
 import { lastFetchedAt, peekQuote, quotes, refreshQuotes, searchSymbols } from './quotes.js';
 import {
@@ -11,7 +11,7 @@ import {
 
 const PORTFOLIOS = { prive: 'Privé', zakelijk: 'Zakelijk' };
 const TABS = { alles: 'Alles', ...PORTFOLIOS };
-const RANGES = ['1M', '6M', '1J', 'Altijd'];
+const RANGES = ['1D', '1W', '1M', '6M', '1J', 'Altijd'];
 const VIEWS = { rekening: 'Rekeningen', belegging: 'Beleggingen', totaal: 'Positie', stuk: 'Per aandeel' };
 // Het palet heeft acht kleuren; meer groepen komen samen in Overig, want een negende kleur is niet te onderscheiden.
 const SERIES_SLOTS = 8;
@@ -20,10 +20,20 @@ const OTHER_TONE = 'series-other';
 // filter: null, 'rekening:<naam>' of 'belegging:<ticker of id>'; werkt binnen de gekozen tab.
 // view: hoe de grafiek de waarde verdeelt; unit: 'eur' of 'pct' bij een verdeling; otherOpen: grijze groep uitgeklapt.
 // positionView: op het positiescherm de hele positie ('totaal') of per aandeel ('stuk').
+// zoom: de y-as volgt de waarde in plaats van bij 0 te beginnen; dit apparaat onthoudt die keuze.
+const ZOOM_KEY = 'mijnportfolio.zoom';
 const state = {
   tab: 'alles', range: 'Altijd', filter: null, view: 'rekening', unit: 'eur', otherOpen: false, positionView: 'totaal',
-  refreshing: false, refreshFailed: false,
+  zoom: readZoom(), refreshing: false, refreshFailed: false,
 };
+
+function readZoom() {
+  try {
+    return localStorage.getItem(ZOOM_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
 const app = document.getElementById('app');
 
 // ---------- Opmaak ----------
@@ -227,19 +237,40 @@ function unitRow(rerender) {
   });
 }
 
+function zoomCheck(rerender) {
+  return h('label', { class: 'check' },
+    h('input', {
+      type: 'checkbox',
+      checked: state.zoom,
+      onchange: (event) => {
+        state.zoom = event.target.checked;
+        try {
+          localStorage.setItem(ZOOM_KEY, state.zoom ? '1' : '0');
+        } catch {
+          // Zonder opslag geldt de keuze alleen tot de app sluit.
+        }
+        rerender();
+      },
+    }),
+    'As laten meeschalen');
+}
+
 const axisFormatFor = (series) =>
   series.at(-1).day - series[0].day > 400 ? { month: 'short', year: 'numeric' } : { day: 'numeric', month: 'short' };
 
 // `views` zijn de weergaven die op dit scherm kunnen, `stateKey` onthoudt de keuze. Zonder weergaven
 // toont de grafiek waarde tegenover inleg.
 function chartBlock(items, rerender, views = [], stateKey = 'view') {
-  const today = todayIso();
-  const range = { from: rangeStart(state.range, today), to: toDay(today) };
+  const range = chartPeriod(state.range, todayIso(), chartPositions(items));
   const view = views.includes(state[stateKey]) ? state[stateKey] : views[0] ?? 'totaal';
   const stacked = view === 'rekening' || view === 'belegging';
   const wrapper = h('div', { class: 'chart-block' },
     viewRow(views, view, stateKey, rerender),
-    h('div', { class: 'chart-controls' }, rangeRow(rerender), stacked ? unitRow(rerender) : null));
+    h('div', { class: 'chart-controls' },
+      rangeRow(rerender),
+      stacked ? unitRow(rerender) : null,
+      // In procenten is de as altijd 0 tot 100%.
+      stacked && state.unit === 'pct' ? null : zoomCheck(rerender)));
   const chart = stacked ? stackChart(items, view, range)
     : view === 'stuk' ? unitChart(items[0], range)
       : totalChart(items, range);
@@ -274,6 +305,7 @@ function lineChart(series, { valueLabel, costLabel, describe, columns, format })
       holder,
     ],
     mount: () => renderChart(holder, series, {
+      zoom: state.zoom,
       describe: describe(series[0], series.at(-1)),
       formatDate: (day) => date(fromDay(day), axisFormat),
       onSelect: (point) => {
@@ -399,6 +431,7 @@ function stackChart(items, view, range) {
     mount: () => renderStack(holder, series, {
       tones: groups.map((group) => group.tone),
       percent,
+      zoom: state.zoom,
       describe: `Verdeling per ${view} van ${date(fromDay(first.day))} tot ${date(fromDay(last.day))}. Op ${date(fromDay(last.day))}: ${split}; ingelegd ${eur(last.cost)}.`,
       formatDate: (day) => date(fromDay(day), axisFormat),
       onSelect: (point) => {
@@ -435,6 +468,14 @@ function gainLine(gain, gainPct) {
   return `${signedEurHero(gain)} ${word}${pct ? ` (${pct})` : ''}`;
 }
 
+// Wat de gekozen periode opleverde; bij Altijd is dat gewoon de winst of het verlies erboven.
+function periodLine(items) {
+  const list = chartPositions(items);
+  const period = chartPeriod(state.range, todayIso(), list);
+  const change = periodChange(list, period);
+  return change && `${gainLine(change.amount, change.ratio)} sinds ${date(fromDay(period.from), { day: 'numeric', month: 'short' })}`;
+}
+
 function hero(options) {
   const { top, filter, title, figure, lines, chart } = options;
   const figureElement = h('p', { class: 'figure' }, figure);
@@ -443,7 +484,7 @@ function hero(options) {
     filter,
     title ? h('h1', { class: 'hero-title' }, title) : null,
     figureElement,
-    lines.map((line) => h('p', { class: 'hero-line' }, line)),
+    lines.filter(Boolean).map((line) => h('p', { class: 'hero-line' }, line)),
     chart?.element);
   return {
     element,
@@ -566,7 +607,7 @@ function renderHome() {
     top: tabs,
     filter: filterSelect(inTab, rerender),
     figure: eurHero(total.value),
-    lines: inTab.length ? [gainLine(total.gain, total.gainPct), `${eurHero(total.cost)} ingelegd`] : [],
+    lines: inTab.length ? [gainLine(total.gain, total.gainPct), `${eurHero(total.cost)} ingelegd`, periodLine(shown)] : [],
     chart,
   });
 
@@ -656,7 +697,7 @@ function renderPosition(id) {
   const chart = chartBlock([item], rerender, summary.closed ? [] : ['totaal', 'stuk'], 'positionView');
   const lines = summary.closed
     ? [`Volledig verkocht, ${signedEurHero(summary.realized)} resultaat`]
-    : [gainLine(summary.gain, summary.gainPct), `${eurHero(summary.cost)} ingelegd`];
+    : [gainLine(summary.gain, summary.gainPct), `${eurHero(summary.cost)} ingelegd`, periodLine([item])];
   const head = hero({ top, title: position.name, figure: eurHero(summary.value), lines, chart });
 
   const stats = h('dl', { class: 'stats' },

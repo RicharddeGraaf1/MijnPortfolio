@@ -38,7 +38,10 @@ const formatPercent = (value) => `${value}%`;
 const pathThrough = (coordinates) =>
   coordinates.map(([px, py], i) => `${i ? 'L' : 'M'}${px.toFixed(1)} ${py.toFixed(1)}`).join('');
 
-// Assen, rasterlijnen en de bediening die beide grafieken delen. `draw(x, y)` tekent de lijnen of vlakken.
+let clipCount = 0;
+
+// Assen, rasterlijnen en de bediening die beide grafieken delen. `draw(x, y)` tekent de lijnen of vlakken;
+// wat onder de as valt (bij een as die niet bij 0 begint) wordt afgeknipt.
 function plot(container, series, { ticks, formatTick, height, formatDate, describe, onSelect, draw, dotKey }) {
   container.replaceChildren();
   const width = container.clientWidth || 340;
@@ -70,14 +73,21 @@ function plot(container, series, { ticks, formatTick, height, formatDate, descri
     );
   }
 
-  const labelCount = 3;
+  const labelCount = series.length < 3 ? 2 : 3;
   for (let i = 0; i < labelCount; i += 1) {
     const day = firstDay + ((lastDay - firstDay) * i) / (labelCount - 1);
     const anchor = i === 0 ? 'start' : i === labelCount - 1 ? 'end' : 'middle';
     root.append(svg('text', { x: x(day), y: height - 6, 'text-anchor': anchor, class: 'chart-axis' }, formatDate(Math.round(day))));
   }
 
-  root.append(...draw(x, y));
+  const clipId = `chart-clip-${clipCount += 1}`;
+  const clip = svg('clipPath', { id: clipId });
+  clip.append(svg('rect', { x: margin.left - 4, y: margin.top - 4, width: plotWidth + 8, height: plotHeight + 4 }));
+  const defs = svg('defs');
+  defs.append(clip);
+  const marks = svg('g', { 'clip-path': `url(#${clipId})` });
+  marks.append(...draw(x, y));
+  root.append(defs, marks);
 
   const crosshair = svg('line', { y1: margin.top, y2: margin.top + plotHeight, class: 'chart-crosshair', visibility: 'hidden' });
   const dot = dotKey ? svg('circle', { r: 4, class: 'chart-dot' }) : null;
@@ -130,9 +140,10 @@ function plot(container, series, { ticks, formatTick, height, formatDate, descri
   select(series.length - 1, false);
 }
 
-// `onSelect(punt)` krijgt het gekozen punt, of het laatste punt zodra je loslaat.
-export function renderChart(container, series, { formatDate, describe, onSelect }) {
-  const values = series.flatMap((point) => [point.value, point.cost]);
+// `onSelect(punt)` krijgt het gekozen punt, of het laatste punt zodra je loslaat. Met `zoom` past de as
+// zich alleen aan de waarde aan; een inleglijn buiten beeld valt dan weg.
+export function renderChart(container, series, { formatDate, describe, onSelect, zoom = false }) {
+  const values = series.flatMap((point) => (zoom ? [point.value] : [point.value, point.cost]));
   const ticks = niceTicks(Math.min(...values), Math.max(...values));
   const line = (x, y, key) => pathThrough(series.map((p) => [x(p.day), y(p[key])]));
   plot(container, series, {
@@ -152,14 +163,22 @@ export function renderChart(container, series, { formatDate, describe, onSelect 
 
 // Gestapelde vlakken: `series` heeft per punt `parts` in de volgorde van `tones` (CSS-klassen), onderste laag eerst.
 // Met `percent` telt elke dag op tot 100%; anders loopt de inleg (`cost`) er als stippellijn overheen.
-export function renderStack(container, series, { tones, percent, formatDate, describe, onSelect }) {
+// Met `zoom` (alleen in euro) volgt de as de totale waarde. Vlakken die niet bij 0 beginnen zouden de onderste
+// lagen wegknippen, dus dan wordt het totaal een lijn en staat de verdeling alleen in de legenda. Begint de
+// meegeschaalde as toch bij 0 (zoals vaak bij Altijd), dan blijven de vlakken staan.
+export function renderStack(container, series, { tones, percent, zoom = false, formatDate, describe, onSelect }) {
   const layersAt = (point) => {
     const scale = percent ? (point.value > 0 ? 100 / point.value : 0) : 1;
     let sum = 0;
     return point.parts.map((part) => [sum, (sum += part * scale)]);
   };
   const stacks = series.map(layersAt);
-  const ticks = percent ? PERCENT_TICKS : niceTicks(0, Math.max(...series.map((p) => Math.max(p.value, p.cost))));
+  const totals = series.map((p) => p.value);
+  const zoomed = zoom && !percent ? niceTicks(Math.min(...totals), Math.max(...totals)) : null;
+  const cropped = zoomed != null && zoomed[0] > 0;
+  const ticks = percent ? PERCENT_TICKS
+    : cropped ? zoomed
+      : niceTicks(0, Math.max(...series.map((p) => Math.max(p.value, p.cost))));
   const costLine = (x, y) => {
     if (percent) return [];
     const d = pathThrough(series.map((p) => [x(p.day), y(p.cost)]));
@@ -172,13 +191,17 @@ export function renderStack(container, series, { tones, percent, formatDate, des
     formatDate,
     describe,
     onSelect,
-    draw: (x, y) => [...tones.flatMap((tone, layer) => {
+    dotKey: cropped ? 'value' : null,
+    draw: (x, y) => (cropped ? [
+      svg('path', { d: pathThrough(series.map((p) => [x(p.day), y(p.value)])), class: 'chart-line chart-value' }),
+      ...costLine(x, y),
+    ] : [...tones.flatMap((tone, layer) => {
       const top = series.map((p, i) => [x(p.day), y(stacks[i][layer][1])]);
       const bottom = series.map((p, i) => [x(p.day), y(stacks[i][layer][0])]).reverse();
       return [
         svg('path', { d: `${pathThrough([...top, ...bottom])}Z`, class: `chart-area ${tone}` }),
         svg('path', { d: pathThrough(top), class: 'chart-seam' }),
       ];
-    }), ...costLine(x, y)],
+    }), ...costLine(x, y)]),
   });
 }

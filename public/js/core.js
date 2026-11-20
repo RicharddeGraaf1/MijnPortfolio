@@ -53,7 +53,7 @@ export function ledger(txs) {
         cost = 0;
       }
     }
-    steps.push({ day: toDay(tx.date), qty, cost });
+    steps.push({ day: toDay(tx.date), qty, cost, realized });
   }
   return { qty, cost, realized, oversold, steps };
 }
@@ -164,11 +164,23 @@ export function totals(summaries) {
 }
 
 export function rangeStart(range, today) {
+  if (range === '1W') return toDay(today) - 7;
   const months = { '1M': 1, '6M': 6, '1J': 12 }[range];
   if (!months) return null;
   const date = new Date(`${today}T00:00:00Z`);
   date.setUTCMonth(date.getUTCMonth() - months);
   return toDay(date.toISOString().slice(0, 10));
+}
+
+// Begin en eind van de grafiek. Koersen zijn slotkoersen op handelsdagen, dus 1D is de laatste handelsdag
+// tegenover die ervoor, ook in het weekend, en heeft maar twee punten.
+export function chartPeriod(range, today, positions) {
+  const to = toDay(today);
+  if (range !== '1D') return { from: rangeStart(range, today), to };
+  const known = positions.flatMap((position) => position.points).filter(([day]) => day <= to);
+  const market = known.filter(([, , source]) => source === 'markt');
+  const days = [...new Set((market.length ? market : known).map(([day]) => day))].sort((a, b) => a - b);
+  return days.length < 2 ? { from: to - 1, to, maxPoints: 1 } : { from: days.at(-2), to: days.at(-1), maxPoints: 1 };
 }
 
 const track = (position) => ({
@@ -192,8 +204,25 @@ function seriesDays(tracks, from, to, maxPoints) {
 
 function holdingOn(t, day) {
   const holding = asOf(t.steps, day);
-  if (!holding || holding.qty === 0) return { value: 0, cost: 0 };
-  return { value: holding.qty * (asOf(t.points, day) ?? 0), cost: holding.cost };
+  if (!holding) return { value: 0, cost: 0, realized: 0 };
+  return { value: holding.qty * (asOf(t.points, day) ?? 0), cost: holding.cost, realized: holding.realized };
+}
+
+// Wat een periode opleverde. Bijgekochte inleg telt niet als winst en het resultaat van een verkoop wel.
+// Het percentage rekent over de beginwaarde plus wat er in de periode bij kwam. Zonder begin: null.
+export function periodChange(positions, { from, to }) {
+  if (from == null) return null;
+  const tracks = positions.map(track);
+  const at = (day) => tracks.map((t) => holdingOn(t, day)).reduce((sum, holding) => ({
+    value: sum.value + holding.value,
+    cost: sum.cost + holding.cost,
+    realized: sum.realized + holding.realized,
+  }), { value: 0, cost: 0, realized: 0 });
+  const start = at(from);
+  const end = at(to);
+  const amount = (end.value - end.cost + end.realized) - (start.value - start.cost + start.realized);
+  const base = start.value + Math.max(0, end.cost - start.cost);
+  return { amount, ratio: base > 0 ? amount / base : null };
 }
 
 // Waarde en inleg per dag, teruggebracht tot maximaal ongeveer `maxPoints` punten.

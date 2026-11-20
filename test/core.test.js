@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  asOf, breakdownSeries, fromDay, fxSymbol, ledger, monthlyRows, parseNumber, pricePoints, rangeStart, summarize,
-  toDay, totals, unitSeries, validateBackup, valueSeries,
+  asOf, breakdownSeries, chartPeriod, fromDay, fxSymbol, ledger, monthlyRows, parseNumber, periodChange, pricePoints,
+  rangeStart, summarize, toDay, totals, unitSeries, validateBackup, valueSeries,
 } from '../public/js/core.js';
 
 const buy = (date, qty, price, fee = 0) => ({ type: 'buy', date, qty, price, fee });
@@ -138,6 +138,46 @@ test('rangeStart gaat kalendermaanden terug; Alles heeft geen begin', () => {
   assert.equal(fromDay(rangeStart('1M', '2026-03-15')), '2026-02-15');
   assert.equal(fromDay(rangeStart('1J', '2026-03-15')), '2025-03-15');
   assert.equal(rangeStart('Alles', '2026-03-15'), null);
+});
+
+test('rangeStart 1W gaat zeven dagen terug', () => {
+  assert.equal(fromDay(rangeStart('1W', '2026-03-15')), '2026-03-08');
+});
+
+test('chartPeriod 1D pakt de laatste twee handelsdagen, ook in het weekend', () => {
+  const d = toDay;
+  const points = [[d('2026-11-05'), 10, 'markt'], [d('2026-11-06'), 11, 'markt'], [d('2026-11-07'), 12, 'handmatig']];
+  const period = chartPeriod('1D', '2026-11-08', [{ points }]);
+  assert.equal(fromDay(period.from), '2026-11-05');
+  assert.equal(fromDay(period.to), '2026-11-06');
+  assert.equal(period.maxPoints, 1);
+  const series = valueSeries([{ txs: [buy('2026-01-01', 2, 5)], points }], period);
+  assert.deepEqual(series.map((point) => point.value), [20, 22]);
+});
+
+test('chartPeriod 1W eindigt vandaag en heeft geen puntenlimiet', () => {
+  const period = chartPeriod('1W', '2026-11-08', [{ points: [] }]);
+  assert.equal(fromDay(period.from), '2026-11-01');
+  assert.equal(fromDay(period.to), '2026-11-08');
+  assert.equal(period.maxPoints, undefined);
+});
+
+test('periodChange telt bijkopen niet als winst en een verkoop wel', () => {
+  const d = toDay;
+  const points = [[d('2026-01-01'), 10], [d('2026-02-01'), 12], [d('2026-03-01'), 15]];
+  const period = { from: d('2026-02-01'), to: d('2026-03-01') };
+
+  const held = periodChange([{ txs: [buy('2026-01-01', 10, 10)], points }], period);
+  assert.equal(held.amount, 30);
+  assert.equal(held.ratio, 30 / 120);
+
+  const bought = periodChange([{ txs: [buy('2026-01-01', 10, 10), buy('2026-03-01', 10, 15)], points }], period);
+  assert.equal(bought.amount, 30);
+
+  const sold = periodChange([{ txs: [buy('2026-01-01', 10, 10), sell('2026-03-01', 10, 15)], points }], period);
+  assert.equal(sold.amount, 30);
+
+  assert.equal(periodChange([{ txs: [buy('2026-01-01', 10, 10)], points }], { from: null, to: d('2026-03-01') }), null);
 });
 
 test('valueSeries volgt aantal en koers door de tijd', () => {

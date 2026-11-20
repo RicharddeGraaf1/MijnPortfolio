@@ -1,6 +1,6 @@
 // Laat de app ook zonder verbinding openen. Koersen gaan nooit via deze cache:
 // die bewaart de app zelf, met het tijdstip erbij.
-const CACHE = 'mijnportfolio-v3';
+const CACHE = 'mijnportfolio-v6';
 const SHELL = [
   '/',
   '/style.css',
