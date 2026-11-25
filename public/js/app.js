@@ -111,6 +111,14 @@ function chartPositions(items) {
 // Hetzelfde fonds op twee rekeningen telt in het filter als één belegging.
 const securityKey = (position) => position.symbol ?? `id-${position.id}`;
 
+// Korte naam voor de legenda: wat je zelf invulde, anders de ticker zonder beurs (AMD, VUSA). Een ticker
+// die geen woord is (fondscodes als 0P0000ABCD) zegt niets, dan blijft de volledige naam staan.
+function shortName(position) {
+  if (position.shortName) return position.shortName;
+  const ticker = position.symbol?.split('.')[0];
+  return ticker && /^[A-Z][A-Z0-9-]{0,5}$/.test(ticker) ? ticker : position.name;
+}
+
 function applyFilter(items) {
   if (!state.filter) return items;
   const [kind, value] = [state.filter.slice(0, state.filter.indexOf(':')), state.filter.slice(state.filter.indexOf(':') + 1)];
@@ -131,6 +139,7 @@ function bySecurity(items) {
   return [...groups].map(([key, list]) => ({
     key,
     label: list[0].position.name,
+    short: shortName((list.find((item) => item.position.shortName) ?? list[0]).position),
     items: list,
     value: totals(list.map((item) => item.summary)).value,
   })).sort((a, b) => b.value - a.value || a.label.localeCompare(b.label, 'nl'));
@@ -165,7 +174,7 @@ function breakdownGroups(items, view) {
     const loose = items.filter(({ position }) => !position.account);
     if (loose.length) groups.push({ label: 'Zonder rekening', slot: null, items: loose });
   } else {
-    groups = bySecurity(items).map((group, slot) => ({ ...group, slot }));
+    groups = bySecurity(items).map((group, slot) => ({ ...group, label: group.short, slot }));
   }
   const slots = groups.length <= SERIES_SLOTS ? SERIES_SLOTS : SERIES_SLOTS - 1;
   const kept = groups.filter((group) => group.slot != null && group.slot < slots);
@@ -360,33 +369,53 @@ function stackChart(items, view, range) {
     ...point,
     parts: groups.map((group) => sumAt(group.indices, point.parts)),
     costs: groups.map((group) => sumAt(group.indices, point.costs)),
+    results: groups.map((group) => sumAt(group.indices, point.results)),
     memberParts: point.parts,
     memberCosts: point.costs,
+    memberResults: point.results,
   }));
   if (series.length < 2) return { series };
 
+  const first = series[0];
+  const last = series.at(-1);
   const percent = state.unit === 'pct';
   const ratio = (part, whole) => share(whole > 0 ? part / whole : 0);
-  const shown = (point, part, cost) => (percent
-    ? [ratio(cost, point.cost), ratio(part, point.value)]
-    : [eurHero(cost), eurHero(part)]);
+  const groupAt = (i) => (point) => ({ value: point.parts[i], cost: point.costs[i], result: point.results[i] });
+  const memberAt = (m) => (point) => ({ value: point.memberParts[m], cost: point.memberCosts[m], result: point.memberResults[m] });
+  const totalAt = (point) => ({ value: point.value, cost: point.cost, result: point.result });
+  // Inleg, waarde en wat het sinds het begin van de periode opleverde (bijkopen telt niet, verkopen wel).
+  // In procenten: aandeel in het totaal, en het verschil als rendement over de beginwaarde plus wat er bij kwam.
+  // Het totaal staat ook in procenten in euro: 100% zegt niets.
+  const shown = (point, read, total = false) => {
+    const now = read(point);
+    const start = read(first);
+    const amount = now.result - start.result;
+    const base = start.value + Math.max(0, now.cost - start.cost);
+    const change = percent ? signedPct(base > 0 ? amount / base : null) || '–' : signedEurHero(amount);
+    return percent && !total
+      ? [ratio(now.cost, point.cost), ratio(now.value, point.value), change, amount]
+      : [eurHero(now.cost), eurHero(now.value), change, amount];
+  };
 
-  // Elke regel krijgt twee cellen (inleg, waarde) die bij elk gekozen punt worden bijgewerkt.
+  // Elke regel krijgt drie cellen (inleg, waarde, verschil) die bij elk gekozen punt worden bijgewerkt.
   const updaters = [];
-  const cells = (read) => {
+  const cells = (read, total) => {
     const cost = h('span', { class: 'legend-value' });
     const value = h('span', { class: 'legend-value' });
+    const change = h('span', { class: 'legend-value' });
     updaters.push((point) => {
-      [cost.textContent, value.textContent] = read(point);
+      let amount;
+      [cost.textContent, value.textContent, change.textContent, amount] = shown(point, read, total);
+      change.className = `legend-value legend-change ${direction(amount)}`;
     });
-    return [cost, value];
+    return [cost, value, change];
   };
   const rows = groups.map((group, i) => {
     const grouped = group.other && group.indices.length > 1;
     const subRows = grouped ? group.indices.map((m) => h('li', { class: 'legend-item legend-sub', hidden: !state.otherOpen },
       h('span'),
       h('span', { class: 'legend-name' }, members[m].label),
-      cells((point) => shown(point, point.memberParts[m], point.memberCosts[m])))) : [];
+      cells(memberAt(m)))) : [];
     const name = grouped
       ? h('button', {
         type: 'button',
@@ -402,21 +431,20 @@ function stackChart(items, view, range) {
     return [h('li', { class: 'legend-item' },
       h('span', { class: `swatch ${group.tone}` }),
       name,
-      cells((point) => shown(point, point.parts[i], point.costs[i]))), ...subRows];
+      cells(groupAt(i))), ...subRows];
   }).reverse();
-  // Het totaal staat ook in procenten in euro: 100% zegt niets.
   const totalRow = h('li', { class: 'legend-item legend-total' },
-    h('span'), h('span', { class: 'legend-name' }, 'Totaal'), cells((point) => [eurHero(point.cost), eurHero(point.value)]));
+    h('span'), h('span', { class: 'legend-name' }, 'Totaal'), cells(totalAt, true));
+  const changeHead = state.range === 'Altijd' ? 'Resultaat' : `± ${state.range}`;
   const legend = h('ul', { class: 'legend' },
     h('li', { class: 'legend-item legend-head', 'aria-hidden': 'true' },
-      h('span'), h('span'), h('span', { class: 'legend-value' }, 'Inleg'), h('span', { class: 'legend-value' }, 'Waarde')),
+      h('span'), h('span'),
+      ['Inleg', 'Waarde', changeHead].map((text) => h('span', { class: 'legend-value' }, text))),
     rows,
     totalRow);
 
   const readoutDate = h('span', { class: 'readout-date' });
   const holder = h('div', { class: 'chart-holder' });
-  const first = series[0];
-  const last = series.at(-1);
   const axisFormat = axisFormatFor(series);
   const split = groups.map((group, i) => `${group.label} ${ratio(last.parts[i], last.value)}`).join(', ');
   return {
@@ -903,6 +931,14 @@ function openPositionDialog(position, defaultPortfolio) {
     portfolio,
     picker,
     field('Naam', nameInput, 'Geen ticker? Vul alleen de naam in en werk de waarde zelf bij, bijvoorbeeld voor crowdfunding of een deelneming.'),
+    field('Korte naam', h('input', {
+      name: 'shortName',
+      type: 'text',
+      autocomplete: 'off',
+      maxlength: 16,
+      placeholder: position ? shortName({ ...position, shortName: null }) : null,
+      value: position?.shortName ?? '',
+    }), 'Voor de legenda bij de grafiek, bijvoorbeeld AMD of S&P500. Leeg laten: de ticker of de naam.'),
     field('Rekening', accountInput, 'Bijvoorbeeld de naam van je broker. Mag leeg blijven.'),
     h('datalist', { id: 'accounts' }, knownAccounts.map((account) => h('option', { value: account }))),
     editing ? null : h('h3', { class: 'form-subhead' }, 'Eerste aankoop'),
@@ -913,7 +949,8 @@ function openPositionDialog(position, defaultPortfolio) {
       const name = String(data.get('name') ?? '').trim();
       if (!name) return 'Kies een belegging uit de zoekresultaten of vul een naam in.';
       const account = String(data.get('account') ?? '').trim() || null;
-      const base = { name, account, symbol: picked?.symbol ?? null, portfolio: data.get('portfolio') };
+      const short = String(data.get('shortName') ?? '').trim() || null;
+      const base = { name, shortName: short, account, symbol: picked?.symbol ?? null, portfolio: data.get('portfolio') };
       if (editing) {
         savePosition({ ...position, ...base });
       } else {

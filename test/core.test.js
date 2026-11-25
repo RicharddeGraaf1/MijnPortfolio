@@ -215,6 +215,16 @@ test('breakdownSeries geeft per groep de waarde, en samen het totaal', () => {
   assert.deepEqual(series.map((p) => p.costs), [[20, 0], [20, 50], [20, 70]]);
   assert.deepEqual(series.map((p) => p.cost), [20, 70, 90]);
   assert.deepEqual(series.map((p) => p.day), valueSeries([a, b, c], { to: d('2024-01-03') }).map((p) => p.day));
+  assert.deepEqual(series.map((p) => p.results), [[0, 0], [0, 0], [10, 0]]);
+  assert.deepEqual(series.map((p) => p.result), [0, 0, 10]);
+});
+
+test('breakdownSeries telt het resultaat van een verkoop mee in results', () => {
+  const d = toDay;
+  const a = { txs: [buy('2024-01-01', 2, 10), sell('2024-01-03', 1, 15)], points: [[d('2024-01-01'), 10], [d('2024-01-03'), 15]] };
+  const series = breakdownSeries([[a]], { to: d('2024-01-03') });
+  // Op dag 3: 1 stuk van 15 tegen 10 inleg, plus 5 winst op het verkochte stuk.
+  assert.deepEqual(series.at(-1).results, [10]);
 });
 
 test('unitSeries geeft koers en gemiddelde aankoopprijs, en slaat dagen zonder stukken over', () => {
@@ -248,6 +258,8 @@ test('validateBackup accepteert goede en weigert kapotte backups', () => {
   assert.match(validateBackup({ positions: [{ ...good.positions[0], portfolio: 'x' }] }), /privé of zakelijk/);
   assert.equal(validateBackup({ positions: [{ ...good.positions[0], account: 'Bux' }] }), null);
   assert.match(validateBackup({ positions: [{ ...good.positions[0], account: 3 }] }), /rekening/);
+  assert.equal(validateBackup({ positions: [{ ...good.positions[0], shortName: 'AMD' }] }), null);
+  assert.match(validateBackup({ positions: [{ ...good.positions[0], shortName: 3 }] }), /korte naam/);
   assert.match(validateBackup({ positions: [{ ...good.positions[0], txs: [] }] }), /geen transacties/);
   assert.match(validateBackup({ positions: [{ ...good.positions[0], txs: [buy('nope', 1, 1)] }] }), /ongeldige/);
   assert.match(validateBackup({ positions: [{ ...good.positions[0], txs: [sell('2024-01-01', 1, 1)] }] }), /meer dan/);

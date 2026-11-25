@@ -241,7 +241,8 @@ export function valueSeries(positions, { from = null, to, maxPoints = 240 }) {
 }
 
 // Waarde en inleg per groep per dag, voor een gestapelde grafiek: `groups` is een lijst van lijsten
-// posities; `parts` (waarde) en `costs` (inleg) staan in dezelfde volgorde.
+// posities; `parts` (waarde), `costs` (inleg) en `results` (waarde − inleg + gerealiseerd resultaat)
+// staan in dezelfde volgorde. Het verschil in `results` tussen twee dagen is wat de groep toen opleverde.
 export function breakdownSeries(groups, { from = null, to, maxPoints = 240 }) {
   const tracks = groups.map((positions) => positions.map(track));
   const sum = (list) => list.reduce((total, amount) => total + amount, 0);
@@ -249,7 +250,8 @@ export function breakdownSeries(groups, { from = null, to, maxPoints = 240 }) {
     const holdings = tracks.map((group) => group.map((t) => holdingOn(t, day)));
     const parts = holdings.map((group) => sum(group.map((holding) => holding.value)));
     const costs = holdings.map((group) => sum(group.map((holding) => holding.cost)));
-    return { day, parts, costs, value: sum(parts), cost: sum(costs) };
+    const results = holdings.map((group) => sum(group.map((holding) => holding.value - holding.cost + holding.realized)));
+    return { day, parts, costs, results, value: sum(parts), cost: sum(costs), result: sum(results) };
   });
 }
 
@@ -284,6 +286,9 @@ export function validateBackup(data) {
     }
     if (position.account != null && typeof position.account !== 'string') {
       return `${label} heeft een ongeldige rekening.`;
+    }
+    if (position.shortName != null && typeof position.shortName !== 'string') {
+      return `${label} heeft een ongeldige korte naam.`;
     }
     if (!['prive', 'zakelijk'].includes(position.portfolio)) {
       return `${label} is niet privé of zakelijk.`;
