@@ -1,5 +1,7 @@
 node_modules/
 .env*
+# Cache van wrangler bevat het Cloudflare-account.
+.wrangler/
 
 # Backups bevatten je beleggingen en deze repo is openbaar: nooit committen.
 mijnportfolio-backup*.json

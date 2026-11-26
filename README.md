@@ -78,10 +78,23 @@ De telefoon bereikt de server op de pc via Tailscale, dat ook voor HTTPS zorgt:
 Staat de pc uit, dan opent de app nog steeds, maar met de laatst bekende koersen en de laatst opgehaalde
 gegevens.
 
+### Koersen als de pc niet bereikbaar is (optioneel)
+
+Zit de telefoon in een ander netwerk of tailnet dan de pc, dan kan de app koersen ophalen bij een kleine
+eigen koersdienst op Cloudflare Workers (`worker/`). Die geeft alleen koersen en zoekresultaten van Yahoo
+door; je beleggingen gaan er niet langs, wel ziet hij welke tickers je opvraagt. Hij antwoordt alleen aan
+de app (een `….ts.net`-adres of localhost).
+
+1. `cd worker` en `npx wrangler deploy`; dat geeft een `https://….workers.dev`-adres.
+2. Zet dat adres naast het portfoliobestand in `Documents\MijnPortfolio\instellingen.json`:
+   `{ "koersdienst": "https://….workers.dev" }`. Het staat bewust niet in deze openbare repo.
+3. Herstart de server. De app vraagt koersen eerst aan de pc en gebruikt de koersdienst pas als dat niet lukt.
+
 ## Opbouw
 
 - `server.mjs`: serveert `public/`, geeft koersen door van Yahoo Finance, dat vanuit een browser niet
   bereikbaar is (geen CORS), en leest en schrijft het bestand op de pc.
+- `lib/yahoo.mjs`: koersen en zoeken bij Yahoo, gedeeld door de server en de koersdienst in `worker/`.
 - `public/js/core.js`: alle berekeningen, los getest.
 - `public/js/store.js`: opslag en backup.
 - `public/js/quotes.js`: koersen ophalen en onthouden.

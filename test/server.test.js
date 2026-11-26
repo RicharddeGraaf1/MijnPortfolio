@@ -38,7 +38,7 @@ before(async () => {
     }
     return Response.json(CHART);
   };
-  server = createServer(createApp({ fetchImpl, retryDelays: [0, 0] }));
+  server = createServer(createApp({ fetchImpl, retryDelays: [0, 0], quoteService: null }));
   await new Promise((done) => server.listen(0, done));
   base = `http://localhost:${server.address().port}`;
 });

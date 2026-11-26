@@ -1,4 +1,4 @@
-// Haalt koersen op via onze eigen server en onthoudt ze, zodat de app ook offline werkt.
+// Haalt koersen op via onze eigen server (of de koersdienst) en onthoudt ze, zodat de app ook offline werkt.
 import { fxSymbol, toDay, todayIso } from './core.js';
 
 const CACHE_KEY = 'mijnportfolio.quotes.v1';
@@ -30,14 +30,35 @@ export function lastFetchedAt() {
   return times.length ? times.sort().at(-1) : null;
 }
 
-async function getJson(path) {
-  const response = await fetch(path);
+// Adres van de koersdienst voor als de pc niet bereikbaar is; de server zet het in de pagina
+// als het in instellingen.json op de pc staat.
+const REMOTE = document.querySelector('meta[name="koersdienst"]')?.content || null;
+const PC_TIMEOUT_MS = 6000;
+let pcUnreachable = false;
+
+async function fetchJson(url, timeout) {
+  const response = await fetch(url, timeout ? { signal: AbortSignal.timeout(timeout) } : undefined);
   if (!response.ok) {
     const error = new Error(`Status ${response.status}`);
     error.status = response.status;
     throw error;
   }
   return response.json();
+}
+
+// Eerst via de pc. Lukt dat niet (ander netwerk, pc uit of Yahoo weigert de pc), dan via de koersdienst;
+// is de pc helemaal onbereikbaar, dan gaan de volgende verzoeken in deze sessie meteen daarheen.
+async function getJson(path) {
+  if (!REMOTE) return fetchJson(path);
+  if (!pcUnreachable) {
+    try {
+      return await fetchJson(path, PC_TIMEOUT_MS);
+    } catch (error) {
+      if (error.status && error.status < 500) throw error;
+      if (!error.status) pcUnreachable = true;
+    }
+  }
+  return fetchJson(`${REMOTE}${path}`);
 }
 
 async function fetchQuote(symbol, from) {

@@ -1,22 +1,18 @@
 // Serveert de app, haalt koersen op bij Yahoo Finance, dat vanuit een browser niet bereikbaar is
-// (geen CORS), en beheert het bestand met je beleggingen op deze pc.
+// (geen CORS), en beheert het bestand met je beleggingen op deze pc. De koerscode staat in lib/yahoo.mjs.
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { homedir } from 'node:os';
 import { dirname, extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { HttpError, createYahoo } from './lib/yahoo.mjs';
 import { validateBackup } from './public/js/core.js';
 
+export { parseChart, parseSearch } from './lib/yahoo.mjs';
+
 const PUBLIC_DIR = resolve(fileURLToPath(new URL('./public', import.meta.url)));
-const YAHOO = 'https://query1.finance.yahoo.com';
-const YAHOO_HEADERS = { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json', 'Accept-Language': 'en-US,en;q=0.9' };
-// Yahoo is een onofficiële bron en weigert af en toe een verzoek (429); een tweede poging lukt meestal.
-const RETRY_DELAYS_MS = [400, 1200];
-const CACHE_TTL_MS = 10 * 60 * 1000;
-const CACHE_MAX_ENTRIES = 500;
-const UPSTREAM_PER_MINUTE = 120;
-const SEARCH_TYPES = new Set(['EQUITY', 'ETF', 'MUTUALFUND', 'CRYPTOCURRENCY', 'INDEX']);
 const DEFAULT_PORTFOLIO_FILE = join(homedir(), 'Documents', 'MijnPortfolio', 'portfolio.json');
 const PORTFOLIO_MAX_BYTES = 5 * 1024 * 1024;
 
@@ -30,21 +26,13 @@ const MIME = {
   '.woff2': 'font/woff2',
 };
 
-const SECURITY_HEADERS = {
+const securityHeaders = (quoteService) => ({
   'Content-Security-Policy':
-    "default-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    `default-src 'self'; ${quoteService ? `connect-src 'self' ${quoteService}; ` : ''}` +
+    "img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
   'Referrer-Policy': 'no-referrer',
   'X-Content-Type-Options': 'nosniff',
-};
-
-class HttpError extends Error {
-  constructor(status, message) {
-    super(message);
-    this.status = status;
-  }
-}
-
-const round = (value) => Number(value.toFixed(6));
+});
 
 const fileVersion = (content) => `"${createHash('sha256').update(content).digest('hex')}"`;
 
@@ -73,115 +61,27 @@ async function readBody(req) {
   return Buffer.concat(chunks).toString('utf8');
 }
 
-// Yahoo geeft tijdstempels in UTC; de beursdag volgt uit de tijdzone van de beurs.
-function exchangeDate(timestamp, gmtoffset = 0) {
-  return new Date((timestamp + gmtoffset) * 1000).toISOString().slice(0, 10);
-}
-
-export function parseChart(json) {
-  const result = json?.chart?.result?.[0];
-  const meta = result?.meta;
-  if (!meta) return null;
-  const closes = result.indicators?.quote?.[0]?.close ?? [];
-  const bars = [];
-  (result.timestamp ?? []).forEach((timestamp, index) => {
-    const close = closes[index];
-    if (close != null) bars.push([exchangeDate(timestamp, meta.gmtoffset), round(close)]);
-  });
-  return {
-    symbol: meta.symbol,
-    name: meta.longName ?? meta.shortName ?? meta.symbol,
-    currency: meta.currency ?? null,
-    price: meta.regularMarketPrice ?? null,
-    time: meta.regularMarketTime ? exchangeDate(meta.regularMarketTime, meta.gmtoffset) : null,
-    fetchedAt: new Date().toISOString(),
-    bars,
-  };
-}
-
-export function parseSearch(json) {
-  return (json?.quotes ?? [])
-    .filter((quote) => quote.symbol && SEARCH_TYPES.has(quote.quoteType))
-    .map((quote) => ({
-      symbol: quote.symbol,
-      name: quote.longname ?? quote.shortname ?? quote.symbol,
-      exchange: quote.exchDisp ?? '',
-      type: quote.typeDisp ?? '',
-    }));
+// Staat er naast het portfoliobestand een instellingen.json met een koersdienst, dan mag de app daar
+// koersen ophalen als de pc niet bereikbaar is. Het adres staat buiten de repo, want die is openbaar.
+export function readQuoteService(portfolioFile) {
+  try {
+    const settings = JSON.parse(readFileSync(join(dirname(portfolioFile), 'instellingen.json'), 'utf8'));
+    const url = new URL(settings.koersdienst);
+    return url.protocol === 'https:' ? url.origin : null;
+  } catch {
+    return null;
+  }
 }
 
 export function createApp({
   fetchImpl = globalThis.fetch,
   now = Date.now,
-  retryDelays = RETRY_DELAYS_MS,
+  retryDelays,
   portfolioFile = process.env.PORTFOLIO_FILE || DEFAULT_PORTFOLIO_FILE,
+  quoteService = readQuoteService(portfolioFile),
 } = {}) {
-  const cache = new Map();
-  let windowStart = now();
-  let upstreamCalls = 0;
-
-  async function callYahoo(url) {
-    for (let attempt = 0; ; attempt += 1) {
-      if (now() - windowStart > 60_000) {
-        windowStart = now();
-        upstreamCalls = 0;
-      }
-      if (++upstreamCalls > UPSTREAM_PER_MINUTE) throw new HttpError(429, 'Te veel verzoeken');
-
-      let response = null;
-      try {
-        response = await fetchImpl(url, { headers: YAHOO_HEADERS, signal: AbortSignal.timeout(8000) });
-      } catch {
-        // Netwerkfout: valt hieronder onder dezelfde herkansing als een 429 of 5xx.
-      }
-      const retryable = !response || response.status === 429 || response.status >= 500;
-      if (!retryable || attempt >= retryDelays.length) {
-        if (!response) throw new HttpError(502, 'Koersbron niet bereikbaar');
-        return response;
-      }
-      await new Promise((done) => setTimeout(done, retryDelays[attempt]));
-    }
-  }
-
-  async function upstream(url, parse) {
-    const cached = cache.get(url);
-    if (cached && now() - cached.at < CACHE_TTL_MS) return cached.body;
-
-    const response = await callYahoo(url);
-    if (response.status === 404) throw new HttpError(404, 'Onbekende ticker');
-    if (!response.ok) throw new HttpError(502, `Koersbron gaf status ${response.status}`);
-
-    const body = parse(await response.json());
-    if (!body) throw new HttpError(404, 'Onbekende ticker');
-    if (cache.size >= CACHE_MAX_ENTRIES) cache.delete(cache.keys().next().value);
-    cache.set(url, { at: now(), body });
-    return body;
-  }
-
-  function quote(params) {
-    const symbol = params.get('symbol') ?? '';
-    const from = params.get('from') ?? '';
-    if (!/^[A-Za-z0-9.\-=^]{1,20}$/.test(symbol)) throw new HttpError(400, 'Ongeldige ticker');
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || Number.isNaN(Date.parse(from))) {
-      throw new HttpError(400, 'Ongeldige datum');
-    }
-    const period1 = Math.floor(Date.parse(from) / 1000);
-    // Afgerond op de cachetijd, zodat herhaalde verzoeken dezelfde cachesleutel krijgen.
-    const period2 = Math.ceil(now() / CACHE_TTL_MS) * (CACHE_TTL_MS / 1000);
-    return upstream(
-      `${YAHOO}/v8/finance/chart/${encodeURIComponent(symbol)}?period1=${period1}&period2=${period2}&interval=1d`,
-      parseChart,
-    );
-  }
-
-  function search(params) {
-    const q = (params.get('q') ?? '').trim();
-    if (q.length < 2 || q.length > 40) throw new HttpError(400, 'Zoekterm moet 2 tot 40 tekens zijn');
-    return upstream(
-      `${YAHOO}/v1/finance/search?q=${encodeURIComponent(q)}&quotesCount=12&newsCount=0`,
-      parseSearch,
-    );
-  }
+  const { quote, search } = createYahoo({ fetchImpl, now, retryDelays });
+  const SECURITY_HEADERS = securityHeaders(quoteService);
 
   // De host-controle houdt websites buiten die via een eigen domeinnaam bij deze server proberen te komen.
   async function readPortfolio(req, res) {
@@ -247,6 +147,13 @@ export function createApp({
       content = await readFile(file);
     } catch {
       throw new HttpError(404, 'Niet gevonden');
+    }
+    if (relative === 'index.html' && quoteService) {
+      content = content.toString('utf8').replace(
+        '<meta charset="utf-8">',
+        `<meta charset="utf-8">
+  <meta name="koersdienst" content="${quoteService}">`,
+      );
     }
     res.writeHead(200, {
       ...SECURITY_HEADERS,
